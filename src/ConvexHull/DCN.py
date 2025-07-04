@@ -45,10 +45,12 @@ class DivideAndConquerNetwork(nn.Module):
         # General
         self.input_size = input_size
         self.batch_size = batch_size
+
         # Merge
         self.num_units_merge = num_units_merge
         self.rnn_layers = rnn_layers
         self.merge = Merge(input_size, num_units_merge, batch_size)
+
         # Split
         self.num_units_split = num_units_split
         self.split_layers = split_layers
@@ -121,7 +123,7 @@ class DivideAndConquerNetwork(nn.Module):
         loss = cost
         if regularize:
             loss -= self.beta * variances
-        loss.backward(retain_variables=True)
+        loss.backward(retain_graph=True)
         nn.utils.clip_grad_norm(self.split.parameters(), self.grad_clip_split)
         self.optim_split.step()
 
@@ -135,15 +137,23 @@ class DivideAndConquerNetwork(nn.Module):
     #                             Split Phase                                 #
     ###########################################################################
 
+    # Calculates the probability that the samples that happened happened at each depth
     def log_probabilities(self, Bs, Samples, mask, depth):
         LogProbs = []
         lengths = mask.sum(1)
         for scale in range(depth):
             probs = Bs[scale]
             sample = Samples[scale]
-            probs_act = probs * sample + (1 - probs) * (1 - sample)
+
+            probs_act = (
+                probs * sample +           # The probability that the included ones were included
+                (1 - probs) * (1 - sample) # The probability that the excluded ones were excluded
+            )
+
+            # Averages the logs of the probabilities that each choice was as it was made
             logprobs = torch.log(probs_act + (1 - mask) + 1e-6)
             logprobs = logprobs.sum(1) / lengths
+
             LogProbs.append(logprobs)
         return LogProbs
 
@@ -164,8 +174,7 @@ class DivideAndConquerNetwork(nn.Module):
         mask = (input[:, :, 0] >= 0).type(dtype).squeeze()
         Phis, Bs, Inputs_N, Samples = ([] for ii in range(4))
         for scale in range(depth):
-            logits, probs, input_n, Phi = self.split(e, input,
-                                                     mask, scale=scale)
+            logits, probs, input_n, Phi = self.split(e, input, mask, scale=scale)
             # Sample from probabilities and update embeddings
             if random_split:
                 rand = (Variable(torch.zeros(self.batch_size, length))
@@ -177,14 +186,30 @@ class DivideAndConquerNetwork(nn.Module):
                         .type(dtype))
                 init.uniform(rand)
                 sample = (probs > rand).type(dtype)
+
+            # E is a vector where the binary bits of each entry corresponds to which split each entry of X went into at the corresponding depth
+            # Can be used to uniquely identify the group that each entry of X has ended up in
             e = 2 * e + sample
+
             # Appends
             Samples.append(sample)
             Phis.append(Phi)
             Bs.append(probs)
             Inputs_N.append(input_n)
+
             # variance of bernouilli probabilities
             var += self.compute_variance(probs, mask)
+
+        #print(Bs[0])
+
+        #pooled_samples = torch.stack(Bs).flatten().detach().cpu().numpy()
+
+        #plt.figure()
+        #plt.title("Histogram of probability distributions with no regularization")
+        #plt.hist(pooled_samples,range=(0,1),bins=100)
+
+        #plt.savefig("histogram_no_reg.png")
+
         # computes log probabilities of binary actions for the policy gradient
         Log_Probs = self.log_probabilities(Bs, Samples, mask, depth)
         # pad embeddings with infinity to not affect embeddings argsort
@@ -197,22 +222,34 @@ class DivideAndConquerNetwork(nn.Module):
     ###########################################################################
 
     def eliminate_rows(self, prob_sc, ind, phis):
-        """ eliminate rows of phis and prob_matrix scale """
+        """ 
+        Eliminate the rows of phis and prob_matrix scale that correspond to inputs that are no longer going to be expressed.
+        Corresponds to the targets which have the output permutation with the desired indeces, 
+        and all the excluded indices are replaced with trailing zeros.
+
+        """
         length = prob_sc.size()[1]
+
+        # At index 0 is the probability that the entry is not making it to the output
         mask = (prob_sc[:, :, 0] > 0.85).type(dtype)
+
+        # Create a permutation that will reorder the zeroed out entries to the end of the output
         rang = (Variable(torch.range(0, length - 1).unsqueeze(0)
                 .expand_as(mask)).
                 type(dtype))
         ind_sc = torch.sort(rang * (1-mask) + length * mask, 1)[1]
+
         # permute prob_sc
         m = mask.unsqueeze(2).expand_as(prob_sc)
         mm = m.clone()
         mm[:, :, 1:] = 0
         prob_sc = (torch.gather(prob_sc * (1 - m) + mm, 1,
                    ind_sc.unsqueeze(2).expand_as(prob_sc)))
+        
         # compose permutations
         ind = torch.gather(ind, 1, ind_sc)
         active = torch.gather(1-mask, 1, ind_sc)
+
         # permute phis
         active1 = active.unsqueeze(2).expand_as(phis)
         ind1 = ind.unsqueeze(2).expand_as(phis)
@@ -222,6 +259,8 @@ class DivideAndConquerNetwork(nn.Module):
         phis_out = torch.gather(phis_out, 2, ind2) * active2
         return prob_sc, ind, phis_out, active
 
+
+    # Puts all entries of the same split groups beside each other
     def sort_by_embeddings(self, Phis, Inputs_N, e):
         ind = torch.sort(e, 1)[1].squeeze()
         for i, phis in enumerate(Phis):
@@ -235,6 +274,8 @@ class DivideAndConquerNetwork(nn.Module):
                                        ind.unsqueeze(2).expand_as(Inputs_N[i]))
         return Phis, Inputs_N
 
+
+    # Move around the rows of the target as well so that it keeps up with the sorting by embeddings
     def reindex_target(self, target, e):
         """ Reindex target by embedding to be coherent. We have to invert
         a permutation and add some padding to do it correctly. """
@@ -261,6 +302,13 @@ class DivideAndConquerNetwork(nn.Module):
         indexes = torch.max(prob_matrix, 2)[1].squeeze()
         return indexes
 
+    def binarize(self, prob_matrix):
+        indices = torch.argmax(prob_matrix, 2, keepdim=True)
+
+        out_mat = torch.zeros(prob_matrix.shape,device='cuda').scatter_(2, indices, 1.0)
+
+        return out_mat
+
     def combine_matrices(self, prob_matrix, prob_matrix_scale,
                          perm, last=False):
         # prob_matrix shape is bs x length x length + 1. Add extra column.
@@ -278,6 +326,7 @@ class DivideAndConquerNetwork(nn.Module):
     def outputs(self, input, prob_matrix, perm):
         hard_output = (torch.gather(input, 1, perm.unsqueeze(2)
                        .expand_as(input)))
+        
         # soft argmax
         soft_output = torch.bmm(prob_matrix, input)
         return hard_output, soft_output
@@ -305,19 +354,28 @@ class DivideAndConquerNetwork(nn.Module):
         Perms = [perm]
         Points = [input_scale]
         for i, scale in enumerate(range(depth)):
+           # print("Scale:",scale)
             if scale < depth - 1:
                 # fine scales
                 prob_sc = self.merge(input_scale, phis)
                 input_norm = torch.cat((pad_token, Inputs_N[scale + 1]), 1)
+
+                #print(perm[0])
+
                 phis = Phis[scale + 1]
                 prob_sc, ind, phis, _ = self.eliminate_rows(prob_sc, ind, phis)
                 comb = self.combine_matrices(prob_matrix, prob_sc, perm,
                                              last=False)
                 prob_matrix, _, perm = comb
+                
+
                 # postprocess before feeding to next scale
                 hard_out, soft_out = self.outputs(input_norm,
                                                   prob_matrix, perm)
                 input_scale = hard_out
+
+                #print(prob_matrix[0])#[0,1:,1:])
+                #print(self.binarize(prob_matrix[:,1:,1:])[0])
             else:
                 # coarsest scale
                 if mode == 'test':
@@ -330,8 +388,16 @@ class DivideAndConquerNetwork(nn.Module):
                                          target=target)
                 comb = self.combine_matrices(prob_matrix, prob_sc, perm,
                                              last=True)
+                
                 prob_matrix, prob_sc, perm = comb
+
                 hard_out, soft_out = self.outputs(input, prob_matrix, perm)
+
+                #print(prob_matrix[0])#[0,1:,1:])
+                #print(hard_out)
+                #print(self.binarize(prob_matrix[:,1:,1:])[0])
+
+
                 loss, pg_loss = self.merge.compute_loss(prob_matrix, target,
                                                         lp=lp)
             Perms.append(perm)
@@ -351,13 +417,18 @@ class DivideAndConquerNetwork(nn.Module):
         out_split = self.fwd_split(input, it, depth, random_split=random_split,
                                    mode=mode, epoch=epoch)
         var, Phis, Bs, Inputs_N, e, lp = out_split
+
         # reindex at the leaves of the computation tree
         if dynamic:
             Phis, Inputs_N = self.sort_by_embeddings(Phis, Inputs_N, e)
             tar = self.reindex_target(tar, e)
+
+        #print(Phis)
+        #print(Inputs_N[0])
+
         target = (Variable(torch.from_numpy(tar), requires_grad=False)
                   .type(dtype_l))
-        # forward merge
+        # forward mergeS
         out_merge = self.fwd_merge(Inputs_N, target, Phis, Bs, lp, it, depth,
                                    mode=mode, epoch=epoch)
         loss, pg_loss, Perms = out_merge

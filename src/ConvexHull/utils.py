@@ -35,3 +35,9 @@ def compute_accuracy(output, target):
     tar = target.data.cpu().numpy()
     out = output.data.cpu().numpy()
     return np.mean(np.all(np.equal(tar, out[:, 1:]), axis=1))
+
+def compute_miss_rate(output, target):
+    # convert to numpy arrays
+    tar = target.data.cpu().numpy()
+    out = output.data.cpu().numpy()
+    return np.mean(np.equal(tar, out[:, 1:]))

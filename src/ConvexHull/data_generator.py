@@ -20,12 +20,12 @@ class Generator(object):
         # self.input_size = 3
         self.task = 'convex_hull'
         scales_train = [1, 2, 3]
-        scales_test = [5]
+        scales_test = list(range(1,8))
         self.scales = {'train': scales_train, 'test': scales_test}
         self.data = {'train': {}, 'test': {}}
 
     def load_dataset(self):
-        for mode in ['train', 'test']:
+        for mode in ['train','test']:
             for sc in self.scales[mode]:
                 path = os.path.join(self.path_dataset, mode + str(sc))
                 if self.input_size == 2:
@@ -37,6 +37,7 @@ class Generator(object):
                           .format(mode, sc))
                     npz = np.load(path)
                     self.data[mode][sc] = {'x': npz['x'], 'y': npz['y']}
+                    #print(self.data[mode][sc]['x'].shape,self.data[mode][sc]['y'].shape)
                 else:
                     x, y = self.create(scales=sc, mode=mode)
                     self.data[mode][sc] = {'x': x, 'y': y}
@@ -52,10 +53,11 @@ class Generator(object):
         return batch_x, batch_y
 
     def compute_length(self, scales, mode='train'):
-        if mode == 'train':
-            length = np.random.randint(3 * 2 ** scales, 6 * 2 ** (scales) + 1)
-            max_length = 6 * 2 ** scales
-        else:
+        #if mode == 'train':
+        length = np.random.randint(3 * 2 ** scales, 6 * 2 ** (scales) + 1)
+        max_length = 6 * 2 ** scales
+
+        """else:
             if scales == 2:
                 length, max_length = 25, 25
             elif scales == 3:
@@ -63,18 +65,24 @@ class Generator(object):
             elif scales == 4:
                 length, max_length = 100, 100
             elif scales == 5:
-                length, max_length = 200, 200
+                length, max_length = 200, 200"""
         return length, max_length
+
 
     def convexhull_example(self, length, scales):
         points = np.random.uniform(0, 1, [length, self.input_size])
         target = -1 * np.ones([length])
         ch = ConvexHull(points).vertices
+
         argmin = np.argsort(ch)[0]
+
+        # Moves zeros to the end of the list
         ch = list(ch[argmin:]) + list(ch[:argmin])
         target[:len(ch)] = np.array(ch)
+
         target += 1
         return points, target
+
 
     def create(self, scales=3,  mode='train'):
         if mode == 'train':

@@ -20,6 +20,8 @@ import re
 import random
 import argparse
 
+import copy
+
 import torch
 import torch.nn as nn
 from torch.nn import init
@@ -33,13 +35,13 @@ parser = argparse.ArgumentParser()
 parser.add_argument('--dynamic', action='store_true',
                     help='Use DCN. If not set, run baseline. (depth=0)')
 parser.add_argument('--num_examples_train', nargs='?', const=1, type=int,
-                    default=1048576)
+                    default=16384)
 parser.add_argument('--num_examples_test', nargs='?', const=1, type=int,
                     default=4096)
 parser.add_argument('--num_epochs', nargs='?', const=1, type=int, default=35)
-parser.add_argument('--batch_size', nargs='?', const=1, type=int, default=128)
+parser.add_argument('--batch_size', nargs='?', const=1, type=int, default=64)
 parser.add_argument('--mode', nargs='?', const=1, type=str, default='train')
-parser.add_argument('--path_dataset', nargs='?', const=1, type=str, default='')
+parser.add_argument('--path_dataset', nargs='?', const=1, type=str, default=r'c:\Users\epicl\LocalStorage\DiCoNet\dataset')
 parser.add_argument('--path', nargs='?', const=1, type=str, default='')
 
 
@@ -95,6 +97,7 @@ def train(DCN, logger, gen):
     Accuracies_tr = [[] for ii in gen.scales['train']]
     Accuracies_te = [[] for ii in gen.scales['test']]
     iterations_tr = int(gen.num_examples_train / batch_size)
+
     for epoch in range(num_epochs):
         lr = DCN.upd_learning_rate(epoch)
         for it in range(iterations_tr):
@@ -119,8 +122,21 @@ def train(DCN, logger, gen):
                 if args.dynamic:
                     DCN.step_split(pg_loss, var,
                                    regularize=args.regularize_split)
+
+                split_copy = copy.deepcopy(DCN.split)
+                    
                 DCN.step_merge(loss)
+
+                eq = True
+                #for p1, p2 in zip(split_copy.parameters(),DCN.split.parameters()):
+                    #if not torch.equal(p1, == p2): eq = False
+
+                print(eq)
+
+
+
                 losses += loss
+                # Var on split for regularization
                 variances += var
                 # Save discard rates
                 discard_rates = utils.compute_dicard_rate(Perms)
@@ -172,45 +188,75 @@ def train(DCN, logger, gen):
 
 
 def test(DCN, gen):
-    accuracies_test = [[] for ii in gen.scales['test']]
-    iterations_te = int(gen.num_examples_test / batch_size)
-    for it in range(iterations_te):
-        for i, scales in enumerate(gen.scales['test']):
-            # depth tells how many times the dynamic model will be unrolled
-            depth = 1
-            if args.dynamic:
-                depth = scales
-            _, length = gen.compute_length(scales, mode='test')
-            DCN.merge.n, DCN.split.n = [length] * 2
-            input, tar = gen.get_batch(batch=it, scales=scales,
-                                       mode='test')
-            # forward DCN
-            out = DCN(input, tar, length, depth, it=it,
-                      random_split=args.random_split,
-                      mode='test', dynamic=args.dynamic)
-            Phis, Inputs_N, target, Perms, e, loss, pg_loss, var = out
-            acc = utils.compute_accuracy(Perms[-1], target)
-            accuracies_test[i].append(acc)
-            print(sum(accuracies_test[i]) / float(it + 1))
-    accuracies_test = [sum(accs) / iterations_te
-                       for accs in accuracies_test]
-    print('acc test:', accuracies_test)
-    return accuracies_test
+    with torch.no_grad():
+        accuracies_test = [[] for ii in gen.scales['test']]
+
+        miss_rates = np.zeros(len(gen.scales['test']))
+
+        iterations_te = int(gen.num_examples_test / batch_size)
+
+        for it in range(iterations_te):
+            for i, scales in enumerate(gen.scales['test']):
+                # depth tells how many times the dynamic model will be unrolled
+                depth = 1
+                if args.dynamic:
+                    depth = scales
+                _, length = gen.compute_length(scales, mode='test')
+                DCN.merge.n, DCN.split.n = [length] * 2
+                input, tar = gen.get_batch(batch=it, scales=scales,
+                                        mode='test')
+                # forward DCN
+                out = DCN(input, tar, length, depth, it=it,
+                        random_split=args.random_split,
+                        mode='test', dynamic=args.dynamic)
+                Phis, Inputs_N, target, Perms, e, loss, pg_loss, var = out
+                
+                miss_rates[i] += utils.compute_miss_rate(Perms[-1], target) / iterations_te
+                acc = utils.compute_accuracy(Perms[-1], target)
+                accuracies_test[i].append(acc)
+
+
+        accuracies_test = [sum(accs) / iterations_te
+                        for accs in accuracies_test]
+        
+        print('Accuracies over max depths:', ["{:.2%}".format(acc.item()) for acc in accuracies_test])
+        print('Miss rates over max depths:', ["{:.2%}".format(mr.item()) for mr in miss_rates])
+
+        plt.figure()
+        plt.plot(range(len(accuracies_test)), accuracies_test, 'ro-')
+        plt.title('Test Accuracies')    
+        plt.xlabel('Max Depth')
+        plt.ylabel('Accuracy')      
+        plt.savefig(os.path.join(args.path, 'test_accuracies.png'))
+
+        plt.figure()
+        plt.plot(range(len(miss_rates)), miss_rates, 'ro-')
+        plt.title('Test Miss rates')    
+        plt.xlabel('Max Depth')
+        plt.ylabel('Miss Rate')      
+        plt.savefig(os.path.join(args.path, 'test_miss_rates.png'))
+
+        plt.close()     
+
+        return accuracies_test
 
 if __name__ == '__main__':
     logger = Logger(args.path)
     logger.write_settings(args)
+
     DCN = DivideAndConquerNetwork(input_size, args.batch_size,
                                   args.num_units_merge, args.rnn_layers,
                                   args.grad_clip_merge,
                                   args.num_units_split, args.split_layers,
                                   args.grad_clip_split, beta=args.beta)
+    
     if args.load_split is not None:
         DCN.load_split(args.load_split)
     if args.load_merge is not None:
         DCN.load_merge(args.load_merge)
     if torch.cuda.is_available():
         DCN.cuda()
+
     gen = Generator(args.num_examples_train, args.num_examples_test,
                     args.path_dataset, args.batch_size)
     gen.load_dataset()
