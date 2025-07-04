@@ -71,7 +71,7 @@ class DivideAndConquerNetwork(nn.Module):
         path = os.path.join(path, 'parameters/params_split.pt')
         print('Reading split parameters from {}'.format(path))
         if os.path.exists(path):
-            self.split = torch.load(path)
+            self.split = torch.load(path,weights_only=False)
         else:
             raise ValueError('path for split {} does not exist'.format(path))
 
@@ -79,7 +79,7 @@ class DivideAndConquerNetwork(nn.Module):
         path = os.path.join(path, 'parameters/params_ptr.pt')
         print('Reading merge parameters from {}'.format(path))
         if os.path.exists(path):
-            self.merge = torch.load(path)
+            self.merge = torch.load(path,weights_only=False)
         else:
             raise ValueError('path for merge {} does not exist'.format(path))
 

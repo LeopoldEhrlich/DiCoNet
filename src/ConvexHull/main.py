@@ -41,7 +41,7 @@ parser.add_argument('--num_examples_test', nargs='?', const=1, type=int,
 parser.add_argument('--num_epochs', nargs='?', const=1, type=int, default=35)
 parser.add_argument('--batch_size', nargs='?', const=1, type=int, default=64)
 parser.add_argument('--mode', nargs='?', const=1, type=str, default='train')
-parser.add_argument('--path_dataset', nargs='?', const=1, type=str, default=r'c:\Users\epicl\LocalStorage\DiCoNet\dataset')
+parser.add_argument('--path_dataset', nargs='?', const=1, type=str, default='')
 parser.add_argument('--path', nargs='?', const=1, type=str, default='')
 
 
@@ -123,17 +123,8 @@ def train(DCN, logger, gen):
                     DCN.step_split(pg_loss, var,
                                    regularize=args.regularize_split)
 
-                split_copy = copy.deepcopy(DCN.split)
                     
                 DCN.step_merge(loss)
-
-                eq = True
-                #for p1, p2 in zip(split_copy.parameters(),DCN.split.parameters()):
-                    #if not torch.equal(p1, == p2): eq = False
-
-                print(eq)
-
-
 
                 losses += loss
                 # Var on split for regularization
@@ -187,15 +178,17 @@ def train(DCN, logger, gen):
                 logger.save_results(Loss, Accuracies_te, Discard_rates)
 
 
-def test(DCN, gen):
+def test(DCN, gen,args=args):
     with torch.no_grad():
         accuracies_test = [[] for ii in gen.scales['test']]
 
         miss_rates = np.zeros(len(gen.scales['test']))
 
-        iterations_te = int(gen.num_examples_test / batch_size)
+        iterations_te = int(gen.num_examples_test / args.batch_size)
+        print(iterations_te,batch_size,gen.num_examples_test)
 
         for it in range(iterations_te):
+            print(f"{it}/{iterations_te}")
             for i, scales in enumerate(gen.scales['test']):
                 # depth tells how many times the dynamic model will be unrolled
                 depth = 1
@@ -222,25 +215,10 @@ def test(DCN, gen):
         print('Accuracies over max depths:', ["{:.2%}".format(acc.item()) for acc in accuracies_test])
         print('Miss rates over max depths:', ["{:.2%}".format(mr.item()) for mr in miss_rates])
 
-        plt.figure()
-        plt.plot(range(len(accuracies_test)), accuracies_test, 'ro-')
-        plt.title('Test Accuracies')    
-        plt.xlabel('Max Depth')
-        plt.ylabel('Accuracy')      
-        plt.savefig(os.path.join(args.path, 'test_accuracies.png'))
+        return accuracies_test, miss_rates
 
-        plt.figure()
-        plt.plot(range(len(miss_rates)), miss_rates, 'ro-')
-        plt.title('Test Miss rates')    
-        plt.xlabel('Max Depth')
-        plt.ylabel('Miss Rate')      
-        plt.savefig(os.path.join(args.path, 'test_miss_rates.png'))
 
-        plt.close()     
-
-        return accuracies_test
-
-if __name__ == '__main__':
+def main(mode = args.mode):
     logger = Logger(args.path)
     logger.write_settings(args)
 
@@ -263,7 +241,12 @@ if __name__ == '__main__':
     DCN.batch_size = args.batch_size
     DCN.merge.batch_size = args.batch_size
     DCN.split.batch_size = args.batch_size
-    if args.mode == 'train':
+    
+    if mode == 'train':
         train(DCN, logger, gen)
-    elif args.mode == 'test':
+    elif mode == 'test':
         test(DCN, gen)
+
+
+if __name__ == '__main__':
+    main()

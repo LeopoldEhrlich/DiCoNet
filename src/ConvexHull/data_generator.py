@@ -10,7 +10,7 @@ from matplotlib import pyplot as plt
 class Generator(object):
     def __init__(
                  self, num_examples_train, num_examples_test,
-                 path_dataset, batch_size
+                 path_dataset, batch_size, scales_test = list(range(1,8))
                  ):
         self.num_examples_train = num_examples_train
         self.num_examples_test = num_examples_test
@@ -20,14 +20,16 @@ class Generator(object):
         # self.input_size = 3
         self.task = 'convex_hull'
         scales_train = [1, 2, 3]
-        scales_test = list(range(1,8))
         self.scales = {'train': scales_train, 'test': scales_test}
         self.data = {'train': {}, 'test': {}}
 
-    def load_dataset(self):
+        # Returns tuple of length of entry, max length of entry given a scale
+        self.compute_length = lambda scales, mode : (np.random.randint(3 * 2 ** scales, 6 * 2 ** (scales) + 1), 6 * 2 ** scales)
+
+    def load_dataset(self,id=''):
         for mode in ['train','test']:
             for sc in self.scales[mode]:
-                path = os.path.join(self.path_dataset, mode + str(sc))
+                path = os.path.join(self.path_dataset, mode + str(sc)) + id
                 if self.input_size == 2:
                     path = path + 'def.npz'
                 elif self.input_size == 3:
@@ -51,22 +53,6 @@ class Generator(object):
         batch_x = self.data[mode][scales]['x'][batch * bs: (batch + 1) * bs]
         batch_y = self.data[mode][scales]['y'][batch * bs: (batch + 1) * bs]
         return batch_x, batch_y
-
-    def compute_length(self, scales, mode='train'):
-        #if mode == 'train':
-        length = np.random.randint(3 * 2 ** scales, 6 * 2 ** (scales) + 1)
-        max_length = 6 * 2 ** scales
-
-        """else:
-            if scales == 2:
-                length, max_length = 25, 25
-            elif scales == 3:
-                length, max_length = 50, 50
-            elif scales == 4:
-                length, max_length = 100, 100
-            elif scales == 5:
-                length, max_length = 200, 200"""
-        return length, max_length
 
 
     def convexhull_example(self, length, scales):
