@@ -180,15 +180,14 @@ def train(DCN, logger, gen):
 
 def test(DCN, gen,args=args):
     with torch.no_grad():
+        outs = []
         accuracies_test = [[] for ii in gen.scales['test']]
-
         miss_rates = np.zeros(len(gen.scales['test']))
 
         iterations_te = int(gen.num_examples_test / args.batch_size)
-        print(iterations_te,batch_size,gen.num_examples_test)
 
         for it in range(iterations_te):
-            print(f"{it}/{iterations_te}")
+            print(f"{it}/{iterations_te}",end='\r')
             for i, scales in enumerate(gen.scales['test']):
                 # depth tells how many times the dynamic model will be unrolled
                 depth = 1
