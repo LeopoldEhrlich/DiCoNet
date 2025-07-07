@@ -21,6 +21,8 @@ from torch.autograd import Variable
 from torch import optim
 import torch.nn.functional as F
 
+import utils
+
 dtype = torch.float32
 
 device = torch.device('cuda')
@@ -50,16 +52,22 @@ class SplitLayer(nn.Module):
         # Concatenates the normalized input and the last layer
         hidden = torch.cat((hidden, input_n), 2).to(dtype)
 
-        # Group wise sums
-        h_conv = torch.div(torch.bmm(phi.to(dtype), hidden), nh)
+        # Group wise means
+        h_conv = utils.cat_means(phi,hidden,nh).sum(2)
+        #print("h_conv",h_conv.shape)
 
         #print(hidden.type())
+        #print(hidden.shape,h_conv.shape)
+        
 
+        
         # Input to the hidden layers
         hidden = hidden.view(-1, self.hidden_size + self.input_size)
         h_conv = h_conv.view(-1, self.hidden_size + self.input_size)
 
         # h_conv has shape (batch_size, n, hidden_size + input_size)
+        #print(torch.mm(hidden, self.W1).shape,torch.mm(h_conv, self.W2).shape)
+       
 
         #print(hidden.type(),self.W1.type())
         m1 = (torch.mm(hidden, self.W1)
@@ -94,22 +102,22 @@ class Split(nn.Module):
 
         Phi = self.build_Phi(e, mask)
         
-        uniques = torch.unique_consecutive(e,dim=1,return_counts=True)[-1].to(dtype)
-        N = Phi @ uniques[:,None,:]
-
-        #N = Phi.sum(2)
+        N = utils.phi_to_N(Phi)
 
         N += (N == 0)  # avoid division by zero
-        Nh = N.unsqueeze(2).expand(self.batch_size, self.n,
-                                   self.hidden_size + self.input_size).type(dtype)
+        """Nh = N.unsqueeze(2).expand(self.batch_size, self.n,
+                                   self.hidden_size + self.input_size).type(dtype)"""
         
         # Normalize inputs, important part!
         mask_inp = mask.unsqueeze(2).expand_as(input)
+        #print(mask_inp.shape)
         input_n = self.Normalize_inputs(Phi, N, input) * mask_inp
+
 
         # input_n = input * mask_inp
         for i, layer in enumerate(self.layers):
-            hidden = layer(input_n, hidden, Phi, Nh)
+            hidden = layer(input_n, hidden, Phi, N)
+
         hidden_p = hidden.view(self.batch_size * self.n, self.hidden_size)
         scores = self.linear_b(hidden_p)
         probs = torch.sigmoid(scores).view(self.batch_size, self.n) * mask
@@ -119,14 +127,17 @@ class Split(nn.Module):
     def build_Phi(self, e, mask):
         # number of groups
         group_no = int(torch.max(e).item())+1
+        #print(group_no)
         # Shape of batch, length, number of groups
         s = (e.shape[0],e.shape[1],group_no)
-        Phi = torch.zeros(s,device=device,dtype=dtype)
+        Phi = torch.zeros(s,device=device,dtype=torch.bool)
         
         # Prep for broadcasting
         et = e.unsqueeze(2)
         
-        Phi.scatter_(2,et,1)
+        Phi.scatter_(2,et,True)
+
+        #print("orig Phi", Phi.shape)
 
         """# Make on the CPU expanded, then compress and send to gpu
         e, mask = e.to(torch.device('cpu')), mask.to(torch.device('cpu'))
@@ -151,27 +162,30 @@ class Split(nn.Module):
             Phi = Phi.to_sparse_bsr(int(size))
          """
         return Phi.to(device)
-
+    
+    
+    # Normalizes inputs within categories
     def Normalize_inputs(self, phis, N, input):
         # phis defines the clusters
         length = phis.size()[1]
 
-        # Phi is B len cats
-        # Inp is B len 2
-        # Make phis broadcast over inp B len cats 2
+        inp_masked = utils.mask_input_phi(phis,input)
 
-        inp_masked = input[:,:,None,:].expand(-1,-1,phis.shape[2],-1) * phis
+        
 
-        # Size B cats 2 with means of each category
-        means = inp_masked.sum(1,keepdim=True) / N
-
+        means = utils.cat_means(phis,input,N)
+        #print('means',means.shape)
 
         dif = inp_masked - means
+
+        N = N[:,:,:,None]
+        
         var = (dif * dif).sum(1,keepdim=True) / N
         var += (var == 0).type(dtype)
 
         masked_norm = (inp_masked - means) / (3 * var.sqrt()) + 0.5
 
         inp_norm = torch.amax(masked_norm,dim=2)
+        #print(inp_norm.shape)
 
         return inp_norm

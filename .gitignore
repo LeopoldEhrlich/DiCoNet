@@ -106,3 +106,11 @@ ENV/
 
 # mypy
 .mypy_cache/
+
+lib64
+pyvenv.cfg
+share/man/man1/isympy.1
+share/man/man1/ttx.1
+src/ConvexHull/accs.txt
+src/ConvexHull/models_bkup.zip
+src/ConvexHull/test_reg.sh

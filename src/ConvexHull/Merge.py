@@ -11,6 +11,8 @@ import re
 import random
 import pdb
 
+import utils
+
 import torch.nn as nn
 from torch.autograd import Variable
 
@@ -76,6 +78,13 @@ class PtrNet_tanh(nn.Module):
         exps_sum = (torch.sum(exps_m, 1).squeeze().unsqueeze(1)
                     .expand(self.batch_size, self.n + 1))
         return exps_m / exps_sum
+    
+
+    # Generates tensor of batch for whether each instance is at a new scope
+    def gen_scope_decouple_tensor(self,phi,n):
+        t = torch.all(phi[:,n] == phi[:,n-1],dim=1,keepdim=True)
+        #print("t", t.shape)
+        return t
 
     def Encoder(self, input, phis):
         hidden_encoder = torch.zeros(self.n + 1, self.batch_size,self.hidden_size,device=device)
@@ -90,10 +99,10 @@ class PtrNet_tanh(nn.Module):
 
             # decouple interaction between different scopes using subdiagonal
             if n > 0:
-                t = (phis[:, n, n - 1].squeeze().unsqueeze(1).expand(
-                     self.batch_size, self.hidden_size))
+                t = self.gen_scope_decouple_tensor(phis,n)
                 
                 hidden = t * hidden + ~t * hidden_init
+
             # apply cell
             hidden = self.encoder_cell(input_step, hidden)
             hidden_encoder[n + 1] = hidden
@@ -147,10 +156,13 @@ class PtrNet_tanh(nn.Module):
         if target is not None:
             feed_target = True
         # N[:, n] is the number of elements of the scope of the n-th element
-        N = phis.sum(2).squeeze().unsqueeze(2).expand(self.batch_size, self.n,
-                                                      self.hidden_size)
+        N = utils.phi_to_N(phis).sum(2,keepdim=True).expand(-1,-1,self.hidden_size)
+
         output = torch.ones(self.batch_size, self.n, self.n + 1,device=device)
+
+        # Indecies of the last in the first group per batched entry
         index = ((N[:, 0] - 1) % (self.n)).unsqueeze(1).detach().to(device,torch.int64)
+
         hidden = (torch.gather(hidden_encoder, 1, index + 1)).squeeze()
         # W1xe size: (batch_size, n + 1, hidden_size)
         W1xe = (torch.bmm(hidden_encoder, self.W1.unsqueeze(0).expand(
@@ -164,19 +176,19 @@ class PtrNet_tanh(nn.Module):
             # subdiagonal elements of Phi
             if n > 0:
 
-                t = (phis[:, n, n - 1].squeeze().unsqueeze(1).expand(
-                     self.batch_size, self.hidden_size))
+                t = self.gen_scope_decouple_tensor(phis,n)
                 
                 index = (((N[:, n] + n - 1) % (self.n)).unsqueeze(1)).detach().to(device,torch.int64)
                 init_hidden = (torch.gather(hidden_encoder, 1, index + 1)
                                .squeeze())
                 
-                hidden = t * hidden - ~t * init_hidden
+                hidden = t * hidden + ~t * init_hidden
 
-                t = (phis[:, n, n - 1].squeeze().unsqueeze(1).expand(
-                     self.batch_size, self.input_size))
+                t = self.gen_scope_decouple_tensor(phis,n)
                 
-                input_step = t * input_step - ~t * start
+                input_step = t * input_step + ~t * start
+
+
             # Compute next state
             hidden = self.decoder_cell(input_step, hidden)
             # Compute pairwise interactions
@@ -184,11 +196,22 @@ class PtrNet_tanh(nn.Module):
             # Normalize interactions by taking the masked softmax by phi
             pad = torch.ones(self.batch_size, 1,device=device)
 
-            # An equivalent slice of phi to what was there before
-            phi_slice = phis[:,torch.argmax(phis[:, n])]
+            # An equivalent slice of phi to what was there \
+            #print(torch.argmax(phis[:, n].to(torch.uint8)))
+            #print("Phi",phis.shape)
+
+            inds = torch.argmax(phis[:, n].to(torch.uint8),dim=1)[:,None,None].expand_as(phis)
+
+            phi_slice = phis.gather(dim=1, index=inds)[:,:,0]
+
+            #print(inds)
+            #print(phi_slice)
+
+            #print(phi_slice[1,1])
 
             mask = torch.cat((pad, phi_slice), 1)
             attn = self.softmax_m(mask, u)
+
             if feed_target:
                 # feed next step with target
                 next = (target[:, n].unsqueeze(1).unsqueeze(2)

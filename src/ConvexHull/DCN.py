@@ -72,6 +72,7 @@ class DivideAndConquerNetwork(nn.Module):
         print('Reading split parameters from {}'.format(path))
         if os.path.exists(path):
             self.split = torch.load(path, weights_only=False)
+            print("loaded!")
         else:
             raise ValueError('path for split {} does not exist'.format(path))
 
@@ -233,32 +234,38 @@ class DivideAndConquerNetwork(nn.Module):
         mask = (prob_sc[:, :, 0] > 0.85)
         rang = torch.arange(0, length).unsqueeze(0).expand_as(mask).to(device)
         ind_sc = torch.sort(rang * ~mask + length * mask, 1)[1]
+
         # permute prob_sc
         m = mask.unsqueeze(2).expand_as(prob_sc)
         mm = m.clone()
         mm[:, :, 1:] = 0
         prob_sc = (torch.gather(prob_sc * ~m + mm, 1,
                    ind_sc.unsqueeze(2).expand_as(prob_sc)))
+        
         # compose permutations
         ind = torch.gather(ind, 1, ind_sc)
         active = torch.gather(~mask, 1, ind_sc)
+
         # permute phis
         active1 = active.unsqueeze(2).expand_as(phis)
         ind1 = ind.unsqueeze(2).expand_as(phis)
-        active2 = active.unsqueeze(1).expand_as(phis)
-        ind2 = ind.unsqueeze(1).expand_as(phis)
+
+        #print("phiin",phis.shape,ind1.shape)
+
         phis_out = torch.gather(phis, 1, ind1) * active1
-        phis_out = torch.gather(phis_out, 2, ind2) * active2
+
+        #print("POUT",phis_out.shape)
+
         return prob_sc, ind, phis_out, active
 
     def sort_by_embeddings(self, Phis, Inputs_N, e):
         ind = torch.sort(e, 1)[1].squeeze()
         for i, phis in enumerate(Phis):
+            #print(Phis[i].shape)
             # rearange phis
-            phis_out = (torch.gather(Phis[i], 1, ind.unsqueeze(2)
+            Phis[i] = (torch.gather(Phis[i], 1, ind.unsqueeze(2)
                         .expand_as(phis)))
-            Phis[i] = (torch.gather(phis_out, 2, ind.unsqueeze(1)
-                       .expand_as(phis)))
+            
             # rearange inputs
             Inputs_N[i] = torch.gather(Inputs_N[i], 1,
                                        ind.unsqueeze(2).expand_as(Inputs_N[i]))
@@ -339,6 +346,7 @@ class DivideAndConquerNetwork(nn.Module):
                 prob_sc = self.merge(input_scale, phis)
                 input_norm = torch.cat((pad_token, Inputs_N[scale + 1]), 1)
                 phis = Phis[scale + 1]
+                #print(phis.shape)
                 prob_sc, ind, phis, _ = self.eliminate_rows(prob_sc, ind, phis)
                 comb = self.combine_matrices(prob_matrix, prob_sc, perm,
                                              last=False)

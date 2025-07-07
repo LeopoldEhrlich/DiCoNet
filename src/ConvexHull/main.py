@@ -167,7 +167,7 @@ def train(DCN, logger, gen):
                       .format(epoch, it, iterations_tr,
                               losses.data.cpu().numpy(), Accuracies_tr[-1][-1],
                               elapsed, args.dynamic, lr))
-                logger.plot_Phis_sparsity(Phis, fig=0)
+                #logger.plot_Phis_sparsity(Phis, fig=0)
                 logger.plot_norm_points(Inputs_N, e, Perms,
                                         gen.scales['train'][-1], fig=1)
                 logger.plot_losses(Loss, Loss_reg, fig=2)

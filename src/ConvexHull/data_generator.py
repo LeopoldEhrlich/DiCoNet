@@ -20,8 +20,8 @@ class Generator(object):
         self.input_size = 2
         # self.input_size = 3
         self.task = 'convex_hull'
-        scales_train = [1, 2, 3]
-        scales_test = list(range(1,11))
+        scales_train = [1,2,3]
+        scales_test = list(range(1,4))
         print(scales_test)
         self.scales = {'train': scales_train, 'test': scales_test}
         self.data = {'train': {}, 'test': {}}
