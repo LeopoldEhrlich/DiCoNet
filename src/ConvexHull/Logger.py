@@ -23,6 +23,51 @@ class Logger(object):
         except:
             os.mkdir(directory)
 
+        self.intermediate_sizes = {}
+
+    # Clears the accumulated sizes
+    def clear_sizes(self):
+        self.intermediate_sizes = {}
+
+    # Print the accumulated object sizes in a human readable way
+    def print_sizes(self):
+        # Code for human readable byte sizes 
+        # from https://stackoverflow.com/questions/1094841/get-a-human-readable-version-of-a-file-size
+        def sizeof_fmt(num, suffix="B"):
+            for unit in ("", "Ki", "Mi", "Gi", "Ti", "Pi", "Ei", "Zi"):
+                if abs(num) < 1024.0:
+                    return f"{num:3.1f}{unit}{suffix}"
+                num /= 1024.0
+            return f"{num:.1f}Yi{suffix}"
+
+        # Calculate total memory in the dict
+        total_mem = 0
+
+        for key, value in self.intermediate_sizes.items():
+            total_mem += sum(value)            
+
+        print(f"Total cuda memory in use: {sizeof_fmt(torch.cuda.memory_allocated())}")
+        print(f"Total tracked memory: {sizeof_fmt(total_mem)}")
+        print()
+
+        # Show memory of each object
+        for key, value in self.intermediate_sizes.items():
+            print(f"Object \"{key}\" is consuming {sizeof_fmt(sum(value))}, over {len(value)} instance{'s' if len(value) > 1 else ''}")
+
+        print('\n')
+
+        self.intermediate_sizes = {}
+
+    # Accumulates the size of a given object
+    def collect_size(self, name, item):
+        size = torch.numel(item)*item.element_size() 
+        if name in self.intermediate_sizes:
+            self.intermediate_sizes[name].append(size)
+
+        else:
+            self.intermediate_sizes.update({name:[size]})
+
+
     def write_settings(self, args):
         # write info
         path = self.path + 'settings.txt'
@@ -121,6 +166,10 @@ class Logger(object):
         plt.savefig(path)
 
     def save_results(self, losses, accuracies_test, discard_rates):
+        losses = np.array(losses, dtype=object)
+        accuracies_test = np.array(accuracies_test, dtype=object)
+        discard_rates = np.array(discard_rates, dtype=object)
+
         np.savez(self.path + 'results.npz', Loss=losses,
                  Accuracies=accuracies_test, Discard_rates=discard_rates)
 

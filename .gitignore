@@ -23,6 +23,10 @@ lib64/
 parts/
 sdist/
 var/
+src/ConvexHull/data/
+src/ConvexHull/noreg/
+bin/
+src/ConvexHull/reg/
 wheels/
 *.egg-info/
 .installed.cfg

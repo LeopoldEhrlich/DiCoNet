@@ -15,11 +15,10 @@ import torch.nn as nn
 from torch.autograd import Variable
 
 if torch.cuda.is_available():
-    dtype = torch.cuda.FloatTensor
-    dtype_l = torch.cuda.LongTensor
+    device = torch.device('cuda')
+
 else:
-    dtype = torch.FloatTensor
-    dtype_l = torch.cuda.LongTensor
+    device = torch.device('cpu')
 
 
 ###############################################################################
@@ -79,20 +78,22 @@ class PtrNet_tanh(nn.Module):
         return exps_m / exps_sum
 
     def Encoder(self, input, phis):
-        hidden_encoder = (Variable(torch.zeros(self.n + 1, self.batch_size,
-                          self.hidden_size),
-                          requires_grad=True).type(dtype))
+        hidden_encoder = torch.zeros(self.n + 1, self.batch_size,self.hidden_size,device=device)
+        
         hidden_init = (self.end_state.unsqueeze(0).expand(
                        self.batch_size, self.hidden_size))
         hidden_encoder[0] = hidden_init
+        hidden_encoder.requires_grad_(True)
         hidden = hidden_init
         for n in range(self.n):
             input_step = input[:, n + 1]
+
             # decouple interaction between different scopes using subdiagonal
             if n > 0:
                 t = (phis[:, n, n - 1].squeeze().unsqueeze(1).expand(
                      self.batch_size, self.hidden_size))
-                hidden = t * hidden + (1 - t) * hidden_init
+                
+                hidden = t * hidden + ~t * hidden_init
             # apply cell
             hidden = self.encoder_cell(input_step, hidden)
             hidden_encoder[n + 1] = hidden
@@ -121,10 +122,10 @@ class PtrNet_tanh(nn.Module):
         pg_logsoftmax = (sum([logp.unsqueeze(1).expand_as(logsoftmax) 
                              * logsoftmax for logp in logprobs]))
         pg_logsoftmax /= float(len(logprobs))
-        mask = (Variable(target_col.data > 0).type(dtype).unsqueeze(1)
-                .expand_as(pg_logsoftmax))
+        mask = (target_col > 0).unsqueeze(1).expand_as(pg_logsoftmax)
         pg_logsoftmax = pg_logsoftmax * mask
-        pg_loss_step = self.NLLoss(pg_logsoftmax, target_col.type(dtype_l))
+        target_col = target_col.to(device,torch.int64)
+        pg_loss_step = self.NLLoss(pg_logsoftmax, target_col)
         return pg_loss_step
 
     def compute_loss(self, output, target, lp=None):
@@ -136,7 +137,7 @@ class PtrNet_tanh(nn.Module):
             if lp is not None and len(lp) > 0:
                 pg_loss_step = self.policy_loss(logsoftmax, target[:, n], lp)
                 pg_loss += pg_loss_step
-            loss_step = self.NLLoss(logsoftmax, target[:, n].type(dtype_l))
+            loss_step = self.NLLoss(logsoftmax, target[:, n].to(device,torch.int64))
             loss += loss_step
         return loss, pg_loss
 
@@ -148,9 +149,8 @@ class PtrNet_tanh(nn.Module):
         # N[:, n] is the number of elements of the scope of the n-th element
         N = phis.sum(2).squeeze().unsqueeze(2).expand(self.batch_size, self.n,
                                                       self.hidden_size)
-        output = (Variable(torch.ones(self.batch_size, self.n, self.n + 1))
-                  .type(dtype))
-        index = ((N[:, 0] - 1) % (self.n)).type(dtype_l).unsqueeze(1).detach()
+        output = torch.ones(self.batch_size, self.n, self.n + 1,device=device)
+        index = ((N[:, 0] - 1) % (self.n)).unsqueeze(1).detach().to(device,torch.int64)
         hidden = (torch.gather(hidden_encoder, 1, index + 1)).squeeze()
         # W1xe size: (batch_size, n + 1, hidden_size)
         W1xe = (torch.bmm(hidden_encoder, self.W1.unsqueeze(0).expand(
@@ -163,36 +163,42 @@ class PtrNet_tanh(nn.Module):
             # decouple interaction between different scopes by looking at
             # subdiagonal elements of Phi
             if n > 0:
+
                 t = (phis[:, n, n - 1].squeeze().unsqueeze(1).expand(
                      self.batch_size, self.hidden_size))
-                index = (((N[:, n] + n - 1) % (self.n)).type(dtype_l)
-                         .unsqueeze(1)).detach()
+                
+                index = (((N[:, n] + n - 1) % (self.n)).unsqueeze(1)).detach().to(device,torch.int64)
                 init_hidden = (torch.gather(hidden_encoder, 1, index + 1)
                                .squeeze())
-                hidden = t * hidden + (1 - t) * init_hidden
+                
+                hidden = t * hidden - ~t * init_hidden
+
                 t = (phis[:, n, n - 1].squeeze().unsqueeze(1).expand(
                      self.batch_size, self.input_size))
-                input_step = t * input_step + (1 - t) * start
+                
+                input_step = t * input_step - ~t * start
             # Compute next state
             hidden = self.decoder_cell(input_step, hidden)
             # Compute pairwise interactions
             u = self.attention(hidden, W1xe, hidden_encoder)
             # Normalize interactions by taking the masked softmax by phi
-            pad = Variable(torch.ones(self.batch_size, 1)).type(dtype)
-            mask = torch.cat((pad, phis[:, n].squeeze()), 1)
+            pad = torch.ones(self.batch_size, 1,device=device)
+
+            # An equivalent slice of phi to what was there before
+            phi_slice = phis[:,torch.argmax(phis[:, n])]
+
+            mask = torch.cat((pad, phi_slice), 1)
             attn = self.softmax_m(mask, u)
             if feed_target:
                 # feed next step with target
                 next = (target[:, n].unsqueeze(1).unsqueeze(2)
-                        .expand(self.batch_size, 1, self.input_size)
-                        .type(dtype_l))
+                        .expand(self.batch_size, 1, self.input_size)).to(device,torch.int64)
                 input_step = torch.gather(input_target, 1, next).squeeze()
             else:
                 # not blend
                 index = attn.max(1)[1].squeeze()
                 next = (index.unsqueeze(1).unsqueeze(2)
-                        .expand(self.batch_size, 1, self.input_size)
-                        .type(dtype_l))
+                        .expand(self.batch_size, 1, self.input_size)).to(device)
                 input_step = torch.gather(input, 1, next).squeeze()
                 # blend inputs
                 # input_step = (torch.sum(attn.unsqueeze(2).expand(

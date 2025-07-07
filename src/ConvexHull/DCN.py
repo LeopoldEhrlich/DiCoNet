@@ -25,21 +25,18 @@ from torch.autograd import Variable
 from torch import optim
 import torch.nn.functional as F
 
-if torch.cuda.is_available():
-    dtype = torch.cuda.FloatTensor
-    dtype_l = torch.cuda.LongTensor
-    torch.cuda.manual_seed(0)
-else:
-    dtype = torch.FloatTensor
-    dtype_l = torch.LongTensor
-    torch.manual_seed(0)
+assert torch.cuda.is_available()
+device = torch.device('cuda')
+torch.cuda.manual_seed(0)
 
 
 class DivideAndConquerNetwork(nn.Module):
     def __init__(
                  self, input_size, batch_size,
                  num_units_merge, rnn_layers, grad_clip_merge,
-                 num_units_split, split_layers, grad_clip_split, beta=1.0
+                 num_units_split, split_layers, grad_clip_split,             
+                 logger, dtype,
+                 beta=1.0
                  ):
         super(DivideAndConquerNetwork, self).__init__()
         # General
@@ -61,6 +58,11 @@ class DivideAndConquerNetwork(nn.Module):
         self.grad_clip_merge = grad_clip_merge
         self.optim_merge = optim.Adam(self.merge.parameters())
 
+        # Logging
+        self.logger = logger
+
+        self.dtype = dtype
+
     ###########################################################################
     #                           Load Parameters                               #
     ###########################################################################
@@ -69,7 +71,7 @@ class DivideAndConquerNetwork(nn.Module):
         path = os.path.join(path, 'parameters/params_split.pt')
         print('Reading split parameters from {}'.format(path))
         if os.path.exists(path):
-            self.split = torch.load(path)
+            self.split = torch.load(path, weights_only=False)
         else:
             raise ValueError('path for split {} does not exist'.format(path))
 
@@ -77,7 +79,7 @@ class DivideAndConquerNetwork(nn.Module):
         path = os.path.join(path, 'parameters/params_ptr.pt')
         print('Reading merge parameters from {}'.format(path))
         if os.path.exists(path):
-            self.merge = torch.load(path)
+            self.merge = torch.load(path, weights_only=False)
         else:
             raise ValueError('path for merge {} does not exist'.format(path))
 
@@ -121,7 +123,7 @@ class DivideAndConquerNetwork(nn.Module):
         loss = cost
         if regularize:
             loss -= self.beta * variances
-        loss.backward(retain_variables=True)
+        loss.backward(retain_graph=True)
         nn.utils.clip_grad_norm(self.split.parameters(), self.grad_clip_split)
         self.optim_split.step()
 
@@ -142,7 +144,7 @@ class DivideAndConquerNetwork(nn.Module):
             probs = Bs[scale]
             sample = Samples[scale]
             probs_act = probs * sample + (1 - probs) * (1 - sample)
-            logprobs = torch.log(probs_act + (1 - mask) + 1e-6)
+            logprobs = torch.log(probs_act + ~mask + 1e-6)
             logprobs = logprobs.sum(1) / lengths
             LogProbs.append(logprobs)
         return LogProbs
@@ -159,25 +161,40 @@ class DivideAndConquerNetwork(nn.Module):
                   random_split=False, mode='train', epoch=0):
         length = self.split.n
         var = 0.0
+
         # Iterate over scales
-        e = Variable(torch.zeros(self.batch_size, length)).type(dtype)
-        mask = (input[:, :, 0] >= 0).type(dtype).squeeze()
+        e = torch.zeros(self.batch_size, length,device=device,dtype=torch.int64)
+
+        # input is shape batch size, graph size, coordinate
+        # This line looks for any entries in input with negatives, corresponding to the end of the sequence. 
+        mask = input[:,:,0] >= 0
+        mask.to(device)
+
+        self.logger.collect_size('Mask',mask)
+        self.logger.collect_size('e',e)
+        
         Phis, Bs, Inputs_N, Samples = ([] for ii in range(4))
+        
         for scale in range(depth):
-            logits, probs, input_n, Phi = self.split(e, input,
-                                                     mask, scale=scale)
+            logits, probs, input_n, Phi = self.split(e, input, mask, scale=scale)
+
             # Sample from probabilities and update embeddings
             if random_split:
-                rand = (Variable(torch.zeros(self.batch_size, length))
-                        .type(dtype))
+                rand = torch.zeros(self.batch_size, length)
                 init.uniform(rand)
-                sample = (rand > 0.5).type(dtype)
+                sample = (rand > 0.5).float().to(device)
+
             else:
-                rand = (Variable(torch.zeros(self.batch_size, length))
-                        .type(dtype))
+                rand = torch.zeros(self.batch_size, length).to(device)
                 init.uniform(rand)
-                sample = (probs > rand).type(dtype)
-            e = 2 * e + sample
+                sample = (probs > rand).float()
+
+            e = (2 * e + sample).to(torch.int64)
+
+            self.logger.collect_size('sample',sample)
+            self.logger.collect_size('Phi',Phi)
+            self.logger.collect_size('probs',probs)
+
             # Appends
             Samples.append(sample)
             Phis.append(Phi)
@@ -185,11 +202,25 @@ class DivideAndConquerNetwork(nn.Module):
             Inputs_N.append(input_n)
             # variance of bernouilli probabilities
             var += self.compute_variance(probs, mask)
+      
+        pooled_samples = torch.stack(Bs).flatten().detach().cpu().numpy()
+
+        # plt.figure()
+        # plt.title("Histogram of probability distributions with regularization")
+        # plt.hist(pooled_samples,range=(0,1),bins=100)
+            
+        # plt.savefig(f"./reg/histogram_reg_depth{depth}.png")
+        # np.set_printoptions(precision=3)
+        # print(Bs[0][0].detach().cpu().numpy())
+
+        
+
+
         # computes log probabilities of binary actions for the policy gradient
         Log_Probs = self.log_probabilities(Bs, Samples, mask, depth)
         # pad embeddings with infinity to not affect embeddings argsort
         infty = 1e6
-        e = e * mask + (1 - mask) * infty
+        e = e * mask + ~mask * infty
         return var, Phis, Bs, Inputs_N, e, Log_Probs
 
     ###########################################################################
@@ -199,20 +230,18 @@ class DivideAndConquerNetwork(nn.Module):
     def eliminate_rows(self, prob_sc, ind, phis):
         """ eliminate rows of phis and prob_matrix scale """
         length = prob_sc.size()[1]
-        mask = (prob_sc[:, :, 0] > 0.85).type(dtype)
-        rang = (Variable(torch.range(0, length - 1).unsqueeze(0)
-                .expand_as(mask)).
-                type(dtype))
-        ind_sc = torch.sort(rang * (1-mask) + length * mask, 1)[1]
+        mask = (prob_sc[:, :, 0] > 0.85)
+        rang = torch.arange(0, length).unsqueeze(0).expand_as(mask).to(device)
+        ind_sc = torch.sort(rang * ~mask + length * mask, 1)[1]
         # permute prob_sc
         m = mask.unsqueeze(2).expand_as(prob_sc)
         mm = m.clone()
         mm[:, :, 1:] = 0
-        prob_sc = (torch.gather(prob_sc * (1 - m) + mm, 1,
+        prob_sc = (torch.gather(prob_sc * ~m + mm, 1,
                    ind_sc.unsqueeze(2).expand_as(prob_sc)))
         # compose permutations
         ind = torch.gather(ind, 1, ind_sc)
-        active = torch.gather(1-mask, 1, ind_sc)
+        active = torch.gather(~mask, 1, ind_sc)
         # permute phis
         active1 = active.unsqueeze(2).expand_as(phis)
         ind1 = ind.unsqueeze(2).expand_as(phis)
@@ -239,7 +268,7 @@ class DivideAndConquerNetwork(nn.Module):
         """ Reindex target by embedding to be coherent. We have to invert
         a permutation and add some padding to do it correctly. """
         ind = torch.sort(e, 1)[1].squeeze()
-        first = Variable(torch.zeros(self.batch_size, 1)).type(dtype_l)
+        first = torch.zeros(self.batch_size, 1).to(device)
         ind = torch.cat((first, ind + 1), 1)
         # target = new_target(ind) -> new_target = target(ind_inv)
         # invert permutation
@@ -248,7 +277,7 @@ class DivideAndConquerNetwork(nn.Module):
         target = np.concatenate((target, last), axis=1)
         for example in range(self.batch_size):
             tar = target[example].astype(int)
-            ind_inv_n = ind_inv[example].data.cpu().numpy()
+            ind_inv_n = ind_inv[example].detach().cpu().numpy()
             tar = ind_inv_n[tar]
             tar_aux = tar[np.where(tar > 0)[0]]
             argmin = np.argsort(tar_aux)[0]
@@ -265,7 +294,7 @@ class DivideAndConquerNetwork(nn.Module):
                          perm, last=False):
         # prob_matrix shape is bs x length x length + 1. Add extra column.
         length = prob_matrix_scale.size()[2]
-        first = Variable(torch.zeros([self.batch_size, 1, length])).type(dtype)
+        first = torch.zeros([self.batch_size, 1, length]).to(device)
         first[:, 0, 0] = 1.0
         prob_matrix_scale = torch.cat((first, prob_matrix_scale), 1)
         # argmax
@@ -287,11 +316,11 @@ class DivideAndConquerNetwork(nn.Module):
         # Flow backwards
         Phis, Bs, Inputs_N = Phis[::-1], Bs[::-1], Inputs_N[::-1]
         length = self.merge.n
-        perm = (torch.range(0.0, length)
-                .unsqueeze(0).expand(self.batch_size, length + 1))
-        perm = Variable(perm, requires_grad=False).type(dtype_l)
+        perm = (torch.arange(0.0, length+1,dtype=torch.int64)
+                .unsqueeze(0).expand(self.batch_size, length + 1)).to(device)
+        #perm = Variable(perm, requires_grad=False)
         ind = perm[:, :-1].clone()
-        prob_matrix = Variable(torch.eye(length + 1)).type(dtype)
+        prob_matrix = torch.eye(length + 1).to(device)
         prob_matrix = prob_matrix.unsqueeze(0).expand(self.batch_size,
                                                       length + 1, length + 1)
         # concatenate pad_token to input
@@ -342,11 +371,14 @@ class DivideAndConquerNetwork(nn.Module):
     #                            Forward pass                                 #
     ###########################################################################
 
-    def forward(self, input, tar, length, depth, it=0, epoch=0,
+    def forward(self, input, tar, max_length, depth, it=0, epoch=0,
                 random_split=False, mode='train', dynamic=False):
-        self.merge.n, self.split.n = [length] * 2
-        input = (Variable(torch.from_numpy(input), requires_grad=False)
-                 .type(dtype))
+        self.merge.n, self.split.n = [max_length] * 2
+        input = torch.tensor(input,device=device,dtype=self.dtype)
+
+        self.logger.collect_size("Input",input)
+
+
         # forward split
         out_split = self.fwd_split(input, it, depth, random_split=random_split,
                                    mode=mode, epoch=epoch)
@@ -355,8 +387,9 @@ class DivideAndConquerNetwork(nn.Module):
         if dynamic:
             Phis, Inputs_N = self.sort_by_embeddings(Phis, Inputs_N, e)
             tar = self.reindex_target(tar, e)
-        target = (Variable(torch.from_numpy(tar), requires_grad=False)
-                  .type(dtype_l))
+            
+        target = torch.tensor(tar,device=device)
+        
         # forward merge
         out_merge = self.fwd_merge(Inputs_N, target, Phis, Bs, lp, it, depth,
                                    mode=mode, epoch=epoch)

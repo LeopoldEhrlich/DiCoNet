@@ -12,6 +12,7 @@ class Generator(object):
                  self, num_examples_train, num_examples_test,
                  path_dataset, batch_size
                  ):
+        
         self.num_examples_train = num_examples_train
         self.num_examples_test = num_examples_test
         self.batch_size = batch_size
@@ -20,7 +21,8 @@ class Generator(object):
         # self.input_size = 3
         self.task = 'convex_hull'
         scales_train = [1, 2, 3]
-        scales_test = [5]
+        scales_test = list(range(1,11))
+        print(scales_test)
         self.scales = {'train': scales_train, 'test': scales_test}
         self.data = {'train': {}, 'test': {}}
 
@@ -38,8 +40,8 @@ class Generator(object):
                     npz = np.load(path)
                     self.data[mode][sc] = {'x': npz['x'], 'y': npz['y']}
                 else:
-                    x, y = self.create(scales=sc, mode=mode)
-                    self.data[mode][sc] = {'x': x, 'y': y}
+                    x, y, l = self.create(scales=sc, mode=mode)
+                    self.data[mode][sc] = {'x': x, 'y': y, 'l' : l}
                     # save
                     np.savez(path, x=x, y=y)
                     print('Created {} dataset for {} scales'
@@ -49,13 +51,15 @@ class Generator(object):
         bs = self.batch_size
         batch_x = self.data[mode][scales]['x'][batch * bs: (batch + 1) * bs]
         batch_y = self.data[mode][scales]['y'][batch * bs: (batch + 1) * bs]
-        return batch_x, batch_y
+        #batch_l = self.data[mode][scales]['l'][batch * bs: (batch + 1) * bs]
+        return batch_x, batch_y#, batch_l
 
     def compute_length(self, scales, mode='train'):
-        if mode == 'train':
-            length = np.random.randint(3 * 2 ** scales, 6 * 2 ** (scales) + 1)
-            max_length = 6 * 2 ** scales
-        else:
+        #if mode == 'train':
+        length = np.random.randint(3 * 2 ** scales, 6 * 2 ** (scales) + 1)
+        max_length = 6 * 2 ** scales
+    
+        """else:
             if scales == 2:
                 length, max_length = 25, 25
             elif scales == 3:
@@ -63,7 +67,8 @@ class Generator(object):
             elif scales == 4:
                 length, max_length = 100, 100
             elif scales == 5:
-                length, max_length = 200, 200
+                length, max_length = 200, 200"""
+    
         return length, max_length
 
     def convexhull_example(self, length, scales):
@@ -84,6 +89,7 @@ class Generator(object):
         _, max_length = self.compute_length(scales, mode=mode)
         x = -1 * np.ones([num_examples, max_length, self.input_size])
         y = np.zeros([num_examples, max_length])
+        l = np.zeros(num_examples)
         for ex in range(num_examples):
             length, max_length = self.compute_length(scales, mode=mode)
             if self.task == "convex_hull":
@@ -93,5 +99,5 @@ class Generator(object):
             else:
                 raise ValueError("task {} not implemented"
                                  .format(self.task))
-            x[ex, :length], y[ex, :length] = x_ex, y_ex
-        return x, y
+            x[ex, :length], y[ex, :length], l[ex] = x_ex, y_ex, length
+        return x, y, l

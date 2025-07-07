@@ -12,6 +12,7 @@ import time
 import matplotlib
 matplotlib.use('Agg')
 from matplotlib import pyplot as plt
+import gc
 
 #Pytorch requirements
 import unicodedata
@@ -79,14 +80,22 @@ num_epochs = args.num_epochs
 batch_size = args.batch_size
 input_size = 2
 
-if torch.cuda.is_available():
-    dtype = torch.cuda.FloatTensor
-    dtype_l = torch.cuda.LongTensor
-    torch.cuda.manual_seed(0)
-else:
-    dtype = torch.FloatTensor
-    dtype_l = torch.LongTensor
-    torch.manual_seed(0)
+assert torch.cuda.is_available()
+device = torch.device('cuda')
+dtype = torch.float32
+
+
+def check_graph_size(var):
+    seen = set()
+    def traverse(node):
+        if node not in seen:
+            seen.add(node)
+            if hasattr(node, 'next_functions'):
+                for u in node.next_functions:
+                    if u[0] is not None:
+                        traverse(u[0])
+    traverse(var.grad_fn)
+    return len(seen)
 
 
 def train(DCN, logger, gen):
@@ -98,6 +107,12 @@ def train(DCN, logger, gen):
     for epoch in range(num_epochs):
         lr = DCN.upd_learning_rate(epoch)
         for it in range(iterations_tr):
+            if it % 64 == 0:
+                print(torch.cuda.memory_allocated())
+
+            torch.cuda.empty_cache()
+            gc.collect()
+
             losses = 0.0
             variances = 0.0
             start = time.time()
@@ -110,6 +125,8 @@ def train(DCN, logger, gen):
                 DCN.merge.n, DCN.split.n = [length] * 2
                 input, tar = gen.get_batch(batch=it, scales=scales,
                                            mode='train')
+               
+
                 # forward DCN
                 out = DCN(input, tar, length, depth, it=it, epoch=epoch,
                           random_split=args.random_split,
@@ -120,6 +137,7 @@ def train(DCN, logger, gen):
                     DCN.step_split(pg_loss, var,
                                    regularize=args.regularize_split)
                 DCN.step_merge(loss)
+
                 losses += loss
                 variances += var
                 # Save discard rates
@@ -128,13 +146,21 @@ def train(DCN, logger, gen):
                     Discard_rates[i][sc].append(discard_rates[sc])
                 Accuracies_tr[i].append(utils.compute_accuracy(Perms[-1],
                                                                target))
+                
+            
             losses /= len(gen.scales['train'])
             variances /= len(gen.scales['train'])
             # optimizer.step()
             Loss.append(losses.data.cpu().numpy())
             Loss_reg.append(variances.data.cpu().numpy())
             elapsed = time.time() - start
+
             if it % 64 == 0:
+                print(torch.cuda.memory_allocated())
+            
+                print(f"Split nodes: {check_graph_size(pg_loss)}")
+                print(f"Merge nodes: {check_graph_size(loss)}")
+
                 print('TRAINING --> | Epoch {} | Batch {} / {} | Loss {} |'
                       ' Accuracy Train {} | Elapsed {} | dynamic {} |'
                       ' Learning Rate {}'
@@ -153,6 +179,7 @@ def train(DCN, logger, gen):
                 # for perm in Perms:
                 #     print('permutation', perm.data[0, 1:].cpu().numpy())
                 # print('target', target[0].data.cpu().numpy())
+
             if it % 1000 == 1000 - 1:
                 print('Saving model parameters')
                 DCN.save_split(args.path)
@@ -168,34 +195,60 @@ def train(DCN, logger, gen):
                 logger.plot_accuracies(Accuracies_te,
                                        scales=gen.scales['test'],
                                        mode='test', fig=2)
+                
                 logger.save_results(Loss, Accuracies_te, Discard_rates)
 
 
 def test(DCN, gen):
-    accuracies_test = [[] for ii in gen.scales['test']]
-    iterations_te = int(gen.num_examples_test / batch_size)
-    for it in range(iterations_te):
-        for i, scales in enumerate(gen.scales['test']):
-            # depth tells how many times the dynamic model will be unrolled
-            depth = 1
-            if args.dynamic:
-                depth = scales
-            _, length = gen.compute_length(scales, mode='test')
-            DCN.merge.n, DCN.split.n = [length] * 2
-            input, tar = gen.get_batch(batch=it, scales=scales,
-                                       mode='test')
-            # forward DCN
-            out = DCN(input, tar, length, depth, it=it,
-                      random_split=args.random_split,
-                      mode='test', dynamic=args.dynamic)
-            Phis, Inputs_N, target, Perms, e, loss, pg_loss, var = out
-            acc = utils.compute_accuracy(Perms[-1], target)
-            accuracies_test[i].append(acc)
-            print(sum(accuracies_test[i]) / float(it + 1))
-    accuracies_test = [sum(accs) / iterations_te
-                       for accs in accuracies_test]
-    print('acc test:', accuracies_test)
-    return accuracies_test
+    with torch.no_grad():
+        accuracies_test = [[] for ii in gen.scales['test']]
+
+        miss_rates = np.zeros(len(gen.scales['test']))
+
+        iterations_te = int(gen.num_examples_test / batch_size)
+        for it in range(iterations_te):
+            print(f"{it}/{iterations_te}")
+            for i, scales in enumerate(gen.scales['test']):
+                torch.cuda.empty_cache()
+                gc.collect()
+
+                # depth tells how many times the dynamic model will be unrolled
+                depth = 1
+                if args.dynamic:
+                    depth = scales
+                _, length = gen.compute_length(scales, mode='test')
+                DCN.merge.n, DCN.split.n = [length] * 2
+
+                input, tar = gen.get_batch(batch=it, scales=scales,mode='test')
+
+                # forward DCN
+                out = DCN(input, tar, length, depth, it=it,
+                        random_split=args.random_split,
+                        mode='test', dynamic=args.dynamic)
+                Phis, Inputs_N, target, Perms, e, loss, pg_loss, var = out
+
+                miss_rates[i] += utils.compute_miss_rate(Perms[-1], target) / iterations_te
+                acc = utils.compute_accuracy(Perms[-1], target)
+                accuracies_test[i].append(acc)
+                
+                if scales > 8:
+                    logger.print_sizes()
+                else:
+                    logger.clear_sizes()
+
+        accuracies_test = [sum(accs) / iterations_te
+                        for accs in accuracies_test]
+        print('Accuracies over max depths:', ["{:.2%}".format(acc.item()) for acc in accuracies_test])
+        print('Miss rates over max depths:', ["{:.2%}".format(mr.item()) for mr in miss_rates])
+
+        plt.figure()
+        plt.plot(gen.scales['test'],miss_rates)
+        plt.title('Miss rates by depth')
+
+        plt.savefig("./plots/miss_Rates")
+
+        
+        return accuracies_test
 
 if __name__ == '__main__':
     logger = Logger(args.path)
@@ -204,7 +257,9 @@ if __name__ == '__main__':
                                   args.num_units_merge, args.rnn_layers,
                                   args.grad_clip_merge,
                                   args.num_units_split, args.split_layers,
-                                  args.grad_clip_split, beta=args.beta)
+                                  args.grad_clip_split, beta=args.beta,
+                                  logger=logger, dtype=dtype
+                                  )
     if args.load_split is not None:
         DCN.load_split(args.load_split)
     if args.load_merge is not None:
