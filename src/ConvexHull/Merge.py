@@ -262,4 +262,5 @@ class PtrNet_tanh(nn.Module):
         # Pointer Decoder
         output = self.Decoder(input, hidden_encoder, phis,
                               input_target=input_target, target=target)
+        
         return output

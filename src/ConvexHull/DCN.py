@@ -400,6 +400,8 @@ class DivideAndConquerNetwork(nn.Module):
 
                 loss, pg_loss = self.merge.compute_loss(prob_matrix, target,
                                                         lp=lp)
+                
+            print(len(perm))
             Perms.append(perm)
             Points.append(input_norm)
         return loss, pg_loss, Perms
@@ -432,4 +434,5 @@ class DivideAndConquerNetwork(nn.Module):
         out_merge = self.fwd_merge(Inputs_N, target, Phis, Bs, lp, it, depth,
                                    mode=mode, epoch=epoch)
         loss, pg_loss, Perms = out_merge
+
         return Phis, Inputs_N, target, Perms, e, loss, pg_loss, var

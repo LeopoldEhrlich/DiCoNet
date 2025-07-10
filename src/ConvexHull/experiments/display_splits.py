@@ -13,7 +13,7 @@ import numpy as np
 import torch
 
 class SplitVisualizer:
-    def __init__(self, Inputs_N, all_e, all_Perms, scales, plots_per_page=6):
+    def __init__(self, input, e, scales, plots_per_page=6):
         """
         Initialize the visualizer with pagination controls
         
@@ -24,13 +24,12 @@ class SplitVisualizer:
             scales: Scale factors
             plots_per_page: Number of subplots per page
         """
-        self.Inputs_N = Inputs_N
-        self.all_e = all_e
-        self.all_Perms = all_Perms
+        self.input = input
+        self.e = e
         self.scales = scales
         self.plots_per_page = plots_per_page
         self.current_page = 0
-        self.total_pages = (len(all_Perms) + plots_per_page - 1) // plots_per_page
+        self.total_pages = (len(input) + plots_per_page - 1) // plots_per_page
         self.fig = None
         
     def plot_page(self, page):
@@ -40,8 +39,8 @@ class SplitVisualizer:
 
         n_cols, n_rows = 3, 2
 
-        fig_width = n_cols * 8  # Wider subplots
-        fig_height = n_rows * 6
+        fig_width = n_cols * 4  
+        fig_height = n_rows * 4
         self.fig, self.axes = plt.subplots(n_rows, n_cols, 
                                          figsize=(fig_width, fig_height),
                                          squeeze=False)
@@ -52,25 +51,24 @@ class SplitVisualizer:
             bottom=0.15, top=0.85,
             wspace=0.4, hspace=0.4  
         )
-        
+
         start_idx = page * self.plots_per_page
-        end_idx = min((page + 1) * self.plots_per_page, len(self.all_Perms[-1]))
+        input = self.input
+        end_idx = min((page + 1) * self.plots_per_page, len(input))
         
-        input = self.Inputs_N[0][0].data.cpu().numpy()
         colors = ('#1f77b4', '#ff7f0e')
         
-        self.all_e = torch.sort(self.all_e, 1)[0]
-        Perms = [perm.data.cpu().numpy() for perm in self.all_Perms[-1]]
+        self.e = torch.sort(self.e, 1)[0]
 
         for i, ax in enumerate(self.axes):
-            #ax.set_xlim(0, 1)
-            #ax.set_ylim(0, 1)
+            ax.set_xlim(0, 1)
+            ax.set_xlim(0, 1)
             
             # Add minor ticks for better grid
-            #ax.set_xticks(np.linspace(0, 1, 11), minor=True)
-            #ax.set_yticks(np.linspace(0, 1, 11), minor=True)
-            #ax.grid(which='minor', alpha=0.2)
-            #ax.grid(which='major', alpha=0.5)
+            ax.set_xticks(np.linspace(0, 1, 11), minor=True)
+            ax.set_yticks(np.linspace(0, 1, 11), minor=True)
+            ax.grid(which='minor', alpha=0.2)
+            ax.grid(which='major', alpha=0.5)
 
             idx = start_idx + i
 
@@ -78,20 +76,11 @@ class SplitVisualizer:
                 ax.axis('off')
                 continue
             
-            e = self.all_e[i].data.cpu().numpy()
-            
-            perm = Perms[idx]
-
-            active_ids = np.where(perm > 0)[0]
-
-            perm = perm[active_ids] - 1
-            e = e[active_ids]
-
-            points = input[perm]
+            e = self.e[i].data.cpu().numpy()
             
             for node in (0, 1):
                 ind = np.where(e == node)[0]
-                pts = points[ind]
+                pts = input[ind]
                 ax.scatter(pts[:, 0], pts[:, 1], c=colors[node], 
                             alpha=0.7, edgecolor='w', linewidth=0.5, label=f'Class {node}')
             

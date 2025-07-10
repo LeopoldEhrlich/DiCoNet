@@ -15,13 +15,29 @@ from experiments.experiment_utils import create_DCN, create_gen, default_setting
 import torch
 import numpy as np
 
-def test_scale_invariancy():
-    """Shows accuracies over scales"""
+def test_overall_scale_invariancy():
+    """Shows accuracies of whole forward passes over scales"""
     DCN = create_DCN()
     gen = create_gen(range(1,9))
 
     accuracies_test, miss_rates = test(DCN, gen, default_settings)
     graph_acc_miss('scale_invar', accuracies_test, miss_rates)
+
+
+def test_intra_scale_invariancy():
+    """Shows accuracies at each level of a network's forward pass"""
+    from scipy.spatial import ConvexHull
+
+    def find_target(points):
+        ch = ConvexHull(points).vertices
+    
+        argmin = np.argsort(ch)[0]
+        # Moves zeros to the end of the list
+        ch = list(ch[argmin:]) + list(ch[:argmin])
+        target[:len(ch)] = np.array(ch)
+    
+        target += 1  
+
 
 def test_base_case():
     """Tests the accuracy of the base cases of the network"""
@@ -48,8 +64,18 @@ def graph_split():
     """Creates a figure of various split results"""
     settings = DCN_Settings(num_examples_test=18,batch_size=18)
 
-    DCN = create_DCN()
-    gen = create_gen(range(6,7))
+    DCN = create_DCN(settings)
+    gen = create_gen([6],settings=settings)
+
+    out_arr = run_fwd_test(DCN,gen)
+
+    for (Phis, Inputs_N, target, Perms, e, loss, pg_loss, var), input, s in out_arr:
+        visualizer = SplitVisualizer(input, e, s)
+        visualizer.show()
+    
+
+def run_fwd_test(DCN,gen):
+    out_arr = []
 
     with torch.no_grad():
         for s in gen.scales['test']:
@@ -63,8 +89,9 @@ def graph_split():
             
             Phis, Inputs_N, target, Perms, e, loss, pg_loss, var = out
 
-            visualizer = SplitVisualizer(Inputs_N, e, Perms, s)
-            visualizer.show()
+            out_arr.append((out,input,s))
+
+    return out_arr
 
 if __name__ == "__main__":
     #test_scale_invariancy()
