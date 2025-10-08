@@ -1,27 +1,30 @@
-"""Runs various experiments on DCN code to identify properties of the network."""
-
-
+"""Runs various experiments on DCN code to identify scale invariant properties of the network."""
 import matplotlib.pyplot as plt
-import os
-import argparse
 
 from main import test
 from DCN import DivideAndConquerNetwork
 from data_generator import Generator
 from experiments.settings import DCN_Settings
 from experiments.display_splits import SplitVisualizer
-from experiments.experiment_utils import create_DCN, create_gen, default_settings, graph_acc_miss
+from experiments.experiment_utils import *
 
-import torch
 import numpy as np
+from scipy.stats import linregress
+
+
+default_settings = DCN_Settings(num_examples_test=64*16,batch_size=64)
 
 def test_overall_scale_invariancy():
     """Shows accuracies of whole forward passes over scales"""
-    DCN = create_DCN()
-    gen = create_gen(range(1,9))
+    DCN = create_DCN(default_settings)
+    gen = create_gen(range(1,7),default_settings)
 
     accuracies_test, miss_rates = test(DCN, gen, default_settings)
-    graph_acc_miss('scale_invar', accuracies_test, miss_rates)
+
+    print(linregress(list(range(1,7)),miss_rates).pvalue)
+
+    graph_acc_miss('scale_invar', accuracies_test, miss_rates,default_settings.path)
+
 
 
 def test_intra_scale_invariancy():
@@ -57,43 +60,9 @@ def test_base_case():
     gen.load_dataset('base')
 
     accuracies_test, miss_rates = test(DCN, gen, settings)
-    graph_acc_miss('base_case', accuracies_test, miss_rates)
+    graph_acc_miss('base_case', accuracies_test, miss_rates,default_settings.path)
 
-
-def graph_split():
-    """Creates a figure of various split results"""
-    settings = DCN_Settings(num_examples_test=18,batch_size=18)
-
-    DCN = create_DCN(settings)
-    gen = create_gen([6],settings=settings)
-
-    out_arr = run_fwd_test(DCN,gen)
-
-    for (Phis, Inputs_N, target, Perms, e, loss, pg_loss, var), input, s in out_arr:
-        visualizer = SplitVisualizer(input, e, s)
-        visualizer.show()
-    
-
-def run_fwd_test(DCN,gen):
-    out_arr = []
-
-    with torch.no_grad():
-        for s in gen.scales['test']:
-            input, tar = gen.get_batch(batch=0, scales=s, mode='test')
-
-            _, length = gen.compute_length(s, mode='test')
-
-            out = DCN(input, tar, length, s, it=0,
-                        random_split=False,
-                        mode='test', dynamic=True)
-            
-            Phis, Inputs_N, target, Perms, e, loss, pg_loss, var = out
-
-            out_arr.append((out,input,s))
-
-    return out_arr
 
 if __name__ == "__main__":
-    #test_scale_invariancy()
+    test_overall_scale_invariancy()
     #test_base_case()
-    graph_split()

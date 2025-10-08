@@ -184,7 +184,7 @@ class DivideAndConquerNetwork(nn.Module):
             else:
                 rand = (Variable(torch.zeros(self.batch_size, length))
                         .type(dtype))
-                init.uniform(rand)
+                init.uniform_(rand)
                 sample = (probs > rand).type(dtype)
 
             # E is a vector where the binary bits of each entry corresponds to which split each entry of X went into at the corresponding depth
@@ -234,7 +234,7 @@ class DivideAndConquerNetwork(nn.Module):
         mask = (prob_sc[:, :, 0] > 0.85).type(dtype)
 
         # Create a permutation that will reorder the zeroed out entries to the end of the output
-        rang = (Variable(torch.range(0, length - 1).unsqueeze(0)
+        rang = (Variable(torch.arange(0, length).unsqueeze(0)
                 .expand_as(mask)).
                 type(dtype))
         ind_sc = torch.sort(rang * (1-mask) + length * mask, 1)[1]
@@ -336,7 +336,7 @@ class DivideAndConquerNetwork(nn.Module):
         # Flow backwards
         Phis, Bs, Inputs_N = Phis[::-1], Bs[::-1], Inputs_N[::-1]
         length = self.merge.n
-        perm = (torch.range(0.0, length)
+        perm = (torch.arange(0.0, length+1)
                 .unsqueeze(0).expand(self.batch_size, length + 1))
         perm = Variable(perm, requires_grad=False).type(dtype_l)
         ind = perm[:, :-1].clone()
@@ -353,6 +353,7 @@ class DivideAndConquerNetwork(nn.Module):
         input_norm = input_scale
         Perms = [perm]
         Points = [input_scale]
+        
         for i, scale in enumerate(range(depth)):
            # print("Scale:",scale)
             if scale < depth - 1:
@@ -400,11 +401,10 @@ class DivideAndConquerNetwork(nn.Module):
 
                 loss, pg_loss = self.merge.compute_loss(prob_matrix, target,
                                                         lp=lp)
-                
-            print(len(perm))
+    
             Perms.append(perm)
             Points.append(input_norm)
-        return loss, pg_loss, Perms
+        return loss, pg_loss, Perms, Points
 
     ###########################################################################
     #                            Forward pass                                 #
@@ -433,6 +433,6 @@ class DivideAndConquerNetwork(nn.Module):
         # forward mergeS
         out_merge = self.fwd_merge(Inputs_N, target, Phis, Bs, lp, it, depth,
                                    mode=mode, epoch=epoch)
-        loss, pg_loss, Perms = out_merge
+        loss, pg_loss, Perms, Pts = out_merge
 
-        return Phis, Inputs_N, target, Perms, e, loss, pg_loss, var
+        return Phis, Inputs_N, target, Perms, e, loss, pg_loss, var, Pts

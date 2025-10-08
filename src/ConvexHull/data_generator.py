@@ -35,8 +35,8 @@ class Generator(object):
                 elif self.input_size == 3:
                     path = path = 'def3d.npz'
                 if os.path.exists(path):
-                    print('Reading {} dataset for {} scales'
-                          .format(mode, sc))
+                    #print('Reading {} dataset for {} scales'
+                    #      .format(mode, sc))
                     npz = np.load(path)
                     self.data[mode][sc] = {'x': npz['x'], 'y': npz['y']}
                     #print(self.data[mode][sc]['x'].shape,self.data[mode][sc]['y'].shape)

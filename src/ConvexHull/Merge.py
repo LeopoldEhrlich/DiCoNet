@@ -51,7 +51,7 @@ class PtrNet_tanh(nn.Module):
         # cells
         self.encoder_cell = nn.GRUCell(input_size, hidden_size)
         self.decoder_cell = nn.GRUCell(input_size, hidden_size)
-        self.NLLoss = nn.NLLLoss(size_average=True)
+        self.NLLoss = nn.NLLLoss(reduction='mean')
         
         # initialize weights
         self.init_weights()
@@ -146,7 +146,7 @@ class PtrNet_tanh(nn.Module):
 
         # Averages the log probability of each depth level, producing a vector of shape (batch_size)
         # This is the average across the log probability of every individual splitting descision occuring the way it did
-        logprobs_mean = torch.mean(torch.stack(lp),dim=1)
+        logprobs_mean = 1-torch.mean(torch.stack(lp),dim=1)
 
         # Multiplies each mean in the batch over their corresponding log probability matrix with broadcasting
         pg_logsoftmax = logsoftmax * logprobs_mean[:, None, None] 
@@ -175,8 +175,8 @@ class PtrNet_tanh(nn.Module):
             loss_step = self.NLLoss(logsoftmax, target[:, n].type(dtype_l))
             loss += loss_step
 
-        #if lp is not None and len(lp) > 0:
-            #print(pg_loss,self.compute_pg_loss(output, target, lp))
+        """if lp is not None and len(lp) > 0:
+            pg_loss = self.compute_pg_loss(output, target, lp)"""
 
         return loss, pg_loss
 
